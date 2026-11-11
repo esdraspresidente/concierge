@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Concierge</title>
+<meta name="theme-color" content="#0F2238">
+<link rel="manifest" href="manifest.json?v=1">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+/* Concierge: porteiro dos apps com voz (Fullfin e Trabalho de Homem).
+   Uma tela só: o botão grande. Tudo aqui é ouvir, decidir o app e abrir
+   o app certo — quem confirma e grava é o app de destino. */
+:root{--navy:#0F2238;--green:#25D366;--text:#fff;--dim:rgba(255,255,255,.72);--card:rgba(255,255,255,.08);--line:rgba(255,255,255,.18)}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:var(--navy);color:var(--text);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  display:flex;flex-direction:column;align-items:center;padding:calc(env(safe-area-inset-top) + 20px) 22px calc(env(safe-area-inset-bottom) + 24px)}
+h1{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+.tela{display:none;flex:1;width:100%;max-width:420px;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+.tela.on{display:flex}
+#mic{width:190px;height:190px;border-radius:50%;border:0;background:var(--green);color:#fff;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 18px 40px -12px rgba(37,211,102,.7);transition:transform .12s}
+#mic:active{transform:scale(.95)}
+#mic svg{width:76px;height:76px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+#mic.gravando{animation:pulso 1.4s ease-in-out infinite}
+@keyframes pulso{0%,100%{box-shadow:0 0 0 0 rgba(37,211,102,.6)}50%{box-shadow:0 0 0 30px rgba(37,211,102,0)}}
+#tempo{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums;min-height:38px}
+#dica{color:var(--dim);text-align:center;font-size:15px;min-height:42px}
+.ex{color:var(--dim);font-size:12.5px;text-align:center;line-height:1.5}
+.btn{border:0;border-radius:14px;padding:15px 18px;font-size:16px;font-weight:700;cursor:pointer;width:100%}
+.btn-ff{background:#2E6BE6;color:#fff}
+.btn-tdh{background:#F28C1B;color:#fff}
+.btn-prev{background:#0A9396;color:#fff}
+.btn-g{background:transparent;color:#fff;border:1px solid var(--line)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;width:100%}
+.card small{color:var(--dim);display:block;margin-bottom:4px}
+.in{width:100%;border:1px solid var(--line);background:rgba(255,255,255,.06);color:#fff;border-radius:12px;padding:14px;font-size:16px}
+.erro{color:#FFB4A8;font-size:14px;text-align:center;min-height:20px}
+#sair{position:fixed;top:calc(env(safe-area-inset-top) + 14px);right:16px;background:none;border:0;color:var(--dim);font-size:13px;cursor:pointer}
+</style>
+</head>
+<body>
+<h1>Concierge</h1>
+<button id="sair" onclick="sair()" hidden>Sair</button>
+
+<!-- Login: mesma conta dos apps (Supabase do Fullfin/TDH). -->
+<section class="tela" id="t-login">
+  <p style="color:var(--dim);text-align:center">Entre com a mesma conta do Fullfin e do Trabalho de Homem.</p>
+  <input class="in" id="email" type="email" autocomplete="username" placeholder="E-mail">
+  <input class="in" id="senha" type="password" autocomplete="current-password" placeholder="Senha"
+    onkeydown="if(event.key==='Enter')entrar()">
+  <button class="btn btn-ff" style="background:var(--green)" onclick="entrar()">Entrar</button>
+  <div class="erro" id="login-erro"></div>
+</section>
+
+<!-- Botão grande: toca e fala; toca de novo para enviar. -->
+<section class="tela" id="t-mic">
+  <div id="tempo"></div>
+  <button id="mic" onclick="botaoGrande()" aria-label="Gravar comando"></button>
+  <div id="dica">Toque e fale</div>
+  <button class="btn btn-g" id="cancelar" style="width:auto;padding:10px 26px" onclick="cancelar()" hidden>Cancelar</button>
+  <div class="ex">“gastei 89,50 no Balaroti na obra da Setup” → Trabalho de Homem<br>“paguei 46,80 na padaria no Nubank” → Fullfin<br>“a Juliana Souza pagou a parcela” → PreviMater</div>
+</section>
+
+<section class="tela" id="t-espera">
+  <div id="espera-txt" style="font-size:18px;font-weight:700">Entendendo…</div>
+</section>
+
+<!-- Resultado: para onde vai, com chance de trocar. Em dúvida, a pessoa escolhe. -->
+<section class="tela" id="t-rota">
+  <div class="card"><small>Você disse</small><div id="rota-fala"></div></div>
+  <div id="rota-msg" style="text-align:center;font-weight:700;font-size:17px"></div>
+  <div id="rota-motivo" style="color:var(--dim);font-size:13.5px;text-align:center"></div>
+  <button class="btn btn-tdh" id="b-tdh" onclick="abrir('tdh')">Trabalho de Homem</button>
+  <button class="btn btn-ff" id="b-ff" onclick="abrir('fullfin')">Fullfin</button>
+  <button class="btn btn-prev" id="b-prev" onclick="abrir('prev')">PreviMater</button>
+  <button class="btn btn-g" onclick="voltar()">Falar de novo</button>
+</section>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   CONCIERGE — porteiro dos apps com voz (Fullfin, Trabalho de Homem e
+   PreviMater CRM)
+   Fala uma vez → concierge-voz (previmater-ops) transcreve e decide o app
+   → abre o app certo com ?voz_texto=... → o app manda o texto para a
+   própria voz (fullfin-voz / tdh-voz) e abre a tela de confirmação.
+   NADA é gravado aqui: a segurança dos dois apps é a tela de confirmação,
+   e o Concierge não passa por cima dela.
+   ═══════════════════════════════════════════════════════════════════ */
+const VERSAO = '1.1.0';
+const SB_URL = 'https://ggyngtqknonwnohbzkyj.supabase.co';
+const SB_KEY = 'sb_publishable_WJOo1uEpdSXTPoPDlErTJw_vPSe5x1S';
+const URL_ROTA = SB_URL + '/functions/v1/concierge-voz';
+const APPS = {
+  fullfin: { nome:'Fullfin', url:'https://esdraspresidente.github.io/fullfin/' },
+  tdh: { nome:'Trabalho de Homem', url:'https://esdraspresidente.github.io/trabalho-de-homem/' },
+  // CRM da PreviMater: "a mãe X pagou a parcela" abre o Confirmar
+  // recebimento. Nunca o Fullfin: ele importa a parcela recebida depois.
+  prev: { nome:'PreviMater', url:'https://esdraspresidente.github.io/previmater-crm/' },
+};
+const BOTAO = { tdh:'b-tdh', fullfin:'b-ff', prev:'b-prev' };
+// Tempo para trocar de app antes de abrir sozinho. Curto para não atrasar,
+// longo o bastante para ver "Fullfin" quando era para ser obra.
+const ESPERA_ABRIR_MS = 1800;
+const MAX_SEG = 45;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ICONE_MIC = '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+const ICONE_ENVIAR = '<svg viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></svg>';
+function tela(id){ document.querySelectorAll('.tela').forEach(t => t.classList.toggle('on', t.id === id)); }
+function hojeLocal(){ const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+
+/* ── Sessão ──────────────────────────────────────────────────────────
+   Sessão própria ('concierge_sess'). Não reaproveita a do Fullfin nem a
+   do TDH, apesar de estarem no mesmo endereço: renovar o login aqui
+   trocaria a chave de renovação deles e derrubaria o login dos apps. */
+let sess = null;
+try { sess = JSON.parse(localStorage.getItem('concierge_sess') || 'null'); } catch(e) { sess = null; }
+function saveSess(s){ sess = s; try { s ? localStorage.setItem('concierge_sess', JSON.stringify(s)) : localStorage.removeItem('concierge_sess'); } catch(e){} }
+
+async function renovar(){
+  if (!sess?.refresh_token) throw new Error('sem sessão');
+  const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+    method:'POST', headers:{'Content-Type':'application/json', apikey:SB_KEY}, body:JSON.stringify({ refresh_token:sess.refresh_token }) });
+  const d = await r.json().catch(() => ({}));
+  // Só recusa de verdade apaga o login; sem internet, só avisa.
+  if (!r.ok) {
+    if (r.status === 400 || r.status === 401 || r.status === 403) { saveSess(null); throw new Error('Sessão expirada. Entre de novo.'); }
+    throw new Error('Sem conexão com o servidor.');
+  }
+  if (!d.expires_at) d.expires_at = Math.floor(Date.now()/1000) + (d.expires_in || 3600);
+  saveSess(d);
+}
+async function token(){
+  if (sess?.expires_at && sess.expires_at - 60 < Date.now()/1000) await renovar();
+  return sess?.access_token || null;
+}
+async function entrar(){
+  $('login-erro').textContent = '';
+  try {
+    const r = await fetch(SB_URL + '/auth/v1/token?grant_type=password', {
+      method:'POST', headers:{'Content-Type':'application/json', apikey:SB_KEY},
+      body:JSON.stringify({ email:$('email').value.trim(), password:$('senha').value }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error_description || d.msg || 'E-mail ou senha não conferem.');
+    if (!d.expires_at) d.expires_at = Math.floor(Date.now()/1000) + (d.expires_in || 3600);
+    saveSess(d); $('senha').value = '';
+    iniciar();
+  } catch(e) { $('login-erro').textContent = e.message; }
+}
+function sair(){ saveSess(null); location.reload(); }
+
+/* ── Gravação ────────────────────────────────────────────────────────*/
+const g = { rec:null, stream:null, partes:[], timer:null, t0:0, cancelado:false, ocupado:false };
+
+function prontoParaGravar(){
+  tela('t-mic');
+  const b = $('mic'); b.innerHTML = ICONE_MIC; b.classList.remove('gravando'); b.setAttribute('aria-label', 'Gravar comando');
+  $('tempo').textContent = ''; $('dica').textContent = 'Toque e fale'; $('cancelar').hidden = true;
+}
+function botaoGrande(){ if (g.rec && g.rec.state === 'recording') parar(false); else gravar(); }
+
+async function gravar(automatico){
+  if (g.ocupado) return;
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { $('dica').textContent = 'Este aparelho não permite gravar áudio aqui.'; return; }
+  try { g.stream = await navigator.mediaDevices.getUserMedia({ audio:true }); }
+  catch(e) {
+    // Ao abrir o app, o navegador pode exigir um toque antes do microfone:
+    // aí fica esperando o toque no botão grande, sem mensagem de erro.
+    if (automatico !== true) $('dica').textContent = 'Libere o microfone para o Concierge nas configurações.';
+    return;
+  }
+  const tipos = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'];
+  const mime = tipos.find(t => { try { return MediaRecorder.isTypeSupported(t); } catch(e) { return false; } }) || '';
+  try { g.rec = mime ? new MediaRecorder(g.stream, { mimeType:mime }) : new MediaRecorder(g.stream); }
+  catch(e) { soltarMic(); $('dica').textContent = 'Não consegui iniciar a gravação.'; return; }
+  g.partes = []; g.cancelado = false; g.t0 = Date.now();
+  g.rec.ondataavailable = e => { if (e.data?.size) g.partes.push(e.data); };
+  g.rec.onstop = () => { soltarMic(); if (!g.cancelado) enviar(); };
+  g.rec.start();
+  const b = $('mic'); b.innerHTML = ICONE_ENVIAR; b.classList.add('gravando'); b.setAttribute('aria-label', 'Parar e enviar');
+  $('dica').textContent = 'Fale e toque no botão para enviar'; $('cancelar').hidden = false;
+  const tick = () => {
+    const s = Math.floor((Date.now() - g.t0) / 1000);
+    $('tempo').textContent = Math.floor(s/60) + ':' + String(s % 60).padStart(2, '0');
+    if (s >= MAX_SEG) parar(false);
+  };
+  tick(); g.timer = setInterval(tick, 500);
+}
+function parar(cancelado){
+  g.cancelado = !!cancelado; clearInterval(g.timer);
+  try { if (g.rec?.state === 'recording') g.rec.stop(); else soltarMic(); } catch(e) { soltarMic(); }
+  if (cancelado) prontoParaGravar();
+}
+function cancelar(){ parar(true); }
+// Desliga o microfone de verdade (senão o ícone de gravação fica aceso).
+function soltarMic(){ try { g.stream?.getTracks().forEach(t => t.stop()); } catch(e){} g.stream = null; }
+
+async function enviar(){
+  const tipo = g.rec?.mimeType || 'audio/webm';
+  const blob = new Blob(g.partes, { type:tipo });
+  if (blob.size < 1500) { prontoParaGravar(); $('dica').textContent = 'Não deu para ouvir. Toque e fale de novo.'; return; }
+  g.ocupado = true; tela('t-espera'); $('espera-txt').textContent = 'Entendendo…';
+  try {
+    const tk = await token();
+    if (!tk) { saveSess(null); return iniciar(); }
+    const fd = new FormData();
+    fd.append('audio', blob, 'comando.' + (tipo.includes('mp4') ? 'mp4' : tipo.includes('ogg') ? 'ogg' : 'webm'));
+    fd.append('hoje', hojeLocal());
+    const r = await fetch(URL_ROTA, { method:'POST', headers:{ Authorization:'Bearer ' + tk, apikey:SB_KEY }, body:fd });
+    const j = await r.json().catch(() => ({ ok:false, erro:'resposta inválida (' + r.status + ')' }));
+    if (r.status === 401) { saveSess(null); return iniciar(); }
+    if (!j.ok) { prontoParaGravar(); $('dica').textContent = j.erro || 'Falhou. Toque e fale de novo.'; return; }
+    mostrarRota(j);
+  } catch(e) { prontoParaGravar(); $('dica').textContent = e?.message || 'Sem conexão.'; }
+  finally { g.ocupado = false; }
+}
+
+/* ── Rota ────────────────────────────────────────────────────────────
+   App certo: mostra para onde vai e abre sozinho em 1,8 s (dá para trocar).
+   Dúvida: não abre nada, a pessoa escolhe — gasto que pode ser de obra
+   não pode ir para o Fullfin por chute (contaria duas vezes). */
+let _fala = '', _timerAbrir = null;
+function mostrarRota(j){
+  _fala = j.transcricao || '';
+  tela('t-rota');
+  $('rota-fala').textContent = '“' + _fala + '”';
+  $('rota-motivo').textContent = j.motivo || '';
+  clearTimeout(_timerAbrir);
+  if (APPS[j.app]) {
+    $('rota-msg').textContent = 'Abrindo ' + APPS[j.app].nome + '…';
+    Object.keys(APPS).forEach(k => { const b = $(BOTAO[k]); b.hidden = k === j.app; b.textContent = 'Não, é do ' + APPS[k].nome; });
+    _timerAbrir = setTimeout(() => abrir(j.app), ESPERA_ABRIR_MS);
+  } else {
+    $('rota-msg').textContent = 'Para qual app?';
+    $('b-tdh').hidden = false; $('b-tdh').textContent = 'Trabalho de Homem (obra)';
+    $('b-ff').hidden = false; $('b-ff').textContent = 'Fullfin (casa, pessoal, contas)';
+    $('b-prev').hidden = false; $('b-prev').textContent = 'PreviMater (parcela de mãe)';
+  }
+}
+function abrir(app){
+  clearTimeout(_timerAbrir);
+  if (!_fala || !APPS[app]) return;
+  $('espera-txt').textContent = 'Abrindo ' + APPS[app].nome + '…'; tela('t-espera');
+  // O app de destino tira o ?voz_texto da barra assim que lê.
+  location.href = APPS[app].url + '?voz_texto=' + encodeURIComponent(_fala);
+}
+function voltar(){ clearTimeout(_timerAbrir); prontoParaGravar(); }
+
+/* ── Início ──────────────────────────────────────────────────────────
+   Abriu o app → já tenta gravar (é para isso que ele existe). Se o
+   navegador pedir um toque antes, o botão grande fica esperando. */
+function iniciar(){
+  if (!sess?.access_token) { $('sair').hidden = true; tela('t-login'); return; }
+  $('sair').hidden = false;
+  prontoParaGravar();
+  gravar(true);
+}
+// Voltou para o Concierge (pelo "voltar" do Android ou trocando de app):
+// a tela fica pronta para o próximo comando, sem repetir o anterior.
+window.addEventListener('pageshow', e => { if (e.persisted) iniciar(); });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+iniciar();
+</script>
+</body>
+</html>
