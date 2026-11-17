@@ -116,7 +116,7 @@ h1{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
      NADA é gravado aqui: a segurança dos apps é essa tela, e o Concierge
      não passa por cima dela.
    ═══════════════════════════════════════════════════════════════════ */
-const VERSAO = '1.2.0';
+const VERSAO = '1.2.1';
 const SB_URL = 'https://ggyngtqknonwnohbzkyj.supabase.co';
 const SB_KEY = 'sb_publishable_WJOo1uEpdSXTPoPDlErTJw_vPSe5x1S';
 const URL_ROTA = SB_URL + '/functions/v1/concierge-voz';
@@ -150,34 +150,107 @@ function hojeLocal(){ const d = new Date(); return d.getFullYear() + '-' + Strin
    renovação deles e derrubaria o login dos apps. Pelo mesmo motivo, os
    apps escondidos usam o passe DESTA sessão, só em memória, e nunca
    renovam nada. */
-let sess = null;
-try { sess = JSON.parse(localStorage.getItem('concierge_sess') || 'null'); } catch(e) { sess = null; }
-function saveSess(s){ sess = s; try { s ? localStorage.setItem('concierge_sess', JSON.stringify(s)) : localStorage.removeItem('concierge_sess'); } catch(e){} }
+/* ── Login que não cai (v1.2.1, 17/11/2026) ───────────────────────────
+   Mesmo conserto do Fullfin v3.94. O passe (access_token) vale 1 hora; a
+   chave de renovação (refresh_token) vale até sair da conta, MAS só pode
+   ser usada uma vez. Antes, o Concierge pedia senha em três situações que
+   não eram login vencido de verdade:
+   1. Duas cópias abertas (app instalado + aba do navegador, ou a página
+      que volta do "voltar" do Android com a sessão velha na memória): uma
+      renovava, a outra tentava a chave já usada, o Supabase recusava e o
+      Concierge apagava o login. Agora relê o que está guardado antes de
+      renovar e, se outra cópia já renovou, usa a renovação dela.
+   2. Qualquer 401 da função de voz apagava o login na hora (relógio do
+      celular adiantado/atrasado faz o passe "valer" aqui e não lá). Agora
+      renova e tenta de novo uma vez; só pede senha se a renovação for
+      recusada.
+   3. Celular dormindo: o passe vencia parado. Agora renova ao voltar para
+      a tela e 2 min antes de vencer. */
+const SESS_KEY = 'concierge_sess';
+function lerGuardada(){ try { return JSON.parse(localStorage.getItem(SESS_KEY) || 'null'); } catch(e) { return null; } }
+// Vencimento em ms. Sem expires_at, lê do próprio passe (campo exp do JWT).
+function expMs(s){
+  if (s?.expires_at) return s.expires_at * 1000;
+  try { return JSON.parse(atob(s.access_token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'))).exp * 1000; } catch(e) { return 0; }
+}
+function fresca(s, margem = 60){ return !!(s?.access_token && Date.now() < expMs(s) - margem * 1000); }
+
+let sess = lerGuardada();
+let _timerRenov = null;
+function saveSess(s){
+  if (s && !s.expires_at) s.expires_at = Math.floor(Date.now()/1000) + (s.expires_in || 3600);
+  sess = s;
+  try { s ? localStorage.setItem(SESS_KEY, JSON.stringify(s)) : localStorage.removeItem(SESS_KEY); } catch(e){}
+  agendarRenov();
+}
+function agendarRenov(espera){
+  clearTimeout(_timerRenov);
+  if (!sess) return;
+  const ms = espera ?? Math.max(expMs(sess) - Date.now() - 120000, 15000);
+  _timerRenov = setTimeout(() => { renovar().catch(e => { if (e.rede) agendarRenov(30000); }); }, ms);
+}
+// Outra cópia renovou? Então a chave guardada é diferente da nossa e o
+// passe guardado ainda vale: adota e não gasta chave nenhuma.
+function adotarSeOutraRenovou(minha){
+  const g = lerGuardada();
+  if (g?.refresh_token && g.refresh_token !== minha && fresca(g)) { sess = g; agendarRenov(); return true; }
+  return false;
+}
 
 let _renovando = null;
 function renovar(){
-  if (!sess?.refresh_token) return Promise.reject(new Error('sem sessão'));
   // Uma renovação por vez: duas com a mesma chave derrubam a sessão.
   if (!_renovando) _renovando = (async () => {
-    const r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
-      method:'POST', headers:{'Content-Type':'application/json', apikey:SB_KEY}, body:JSON.stringify({ refresh_token:sess.refresh_token }) });
-    const d = await r.json().catch(() => ({}));
-    // Só recusa de verdade apaga o login; sem internet, só avisa.
-    if (!r.ok) {
-      if (r.status === 400 || r.status === 401 || r.status === 403) { saveSess(null); throw new Error('Sessão expirada. Entre de novo.'); }
-      throw new Error('Sem conexão com o servidor.');
+    if (adotarSeOutraRenovou(sess?.refresh_token)) return;
+    const base = lerGuardada()?.refresh_token ? lerGuardada() : sess;
+    if (!base?.refresh_token) { sess = null; throw new Error('Sessão expirada. Entre de novo.'); }
+    let r, d;
+    try {
+      r = await fetch(SB_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method:'POST', headers:{'Content-Type':'application/json', apikey:SB_KEY}, body:JSON.stringify({ refresh_token:base.refresh_token }) });
+      d = await r.json().catch(() => ({}));
+    } catch(e) { const x = new Error('Sem conexão com o servidor.'); x.rede = true; throw x; }
+    if (r.ok && d?.access_token) { saveSess(d); return; }
+    // Só recusa de verdade apaga o login; servidor ocupado ou sem internet, não.
+    if (r.status === 400 || r.status === 401 || r.status === 403) {
+      // A outra cópia pode ter renovado neste mesmo instante: confere antes de sair.
+      if (adotarSeOutraRenovou(base.refresh_token)) return;
+      saveSess(null); throw new Error('Sessão expirada. Entre de novo.');
     }
-    if (!d.expires_at) d.expires_at = Math.floor(Date.now()/1000) + (d.expires_in || 3600);
-    saveSess(d);
+    const x = new Error('Sem conexão com o servidor.'); x.rede = true; throw x;
   })().finally(() => { _renovando = null; });
   return _renovando;
 }
 // margem: segundos de folga. Para os apps escondidos pede 5 min, porque eles
 // não renovam: o passe tem que durar a carga inteira.
 async function token(margem = 60){
-  if (sess?.expires_at && sess.expires_at - margem < Date.now()/1000) await renovar();
+  if (!sess) sess = lerGuardada();
+  if (sess?.access_token && !fresca(sess, margem)) await renovar();
   return sess?.access_token || null;
 }
+// Chamada às funções com login. Se a função responder 401 com um passe que
+// aqui parecia válido (relógio do celular fora de hora), renova e tenta de
+// novo UMA vez, em vez de apagar o login.
+async function comLogin(url, montarCorpo){
+  let tk = await token();
+  if (!tk) return { semLogin:true };
+  let r = await fetch(url, { method:'POST', headers:{ Authorization:'Bearer ' + tk, apikey:SB_KEY }, body:montarCorpo() });
+  if (r.status === 401) {
+    try { await renovar(); } catch(e) { if (!e.rede) return { semLogin:true }; throw e; }
+    tk = sess?.access_token;
+    if (!tk) return { semLogin:true };
+    r = await fetch(url, { method:'POST', headers:{ Authorization:'Bearer ' + tk, apikey:SB_KEY }, body:montarCorpo() });
+    // Renovou e ainda assim recusou: problema do servidor, não do login. Não apaga.
+    if (r.status === 401) throw new Error('O servidor recusou o login. Tente de novo.');
+  }
+  return { r };
+}
+// Celular dormindo congela os timers: ao voltar para a tela, confere na hora.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!sess) sess = lerGuardada();
+  if (sess && !fresca(sess, 120)) renovar().catch(() => {});
+});
 async function entrar(){
   $('login-erro').textContent = '';
   try {
@@ -186,7 +259,6 @@ async function entrar(){
       body:JSON.stringify({ email:$('email').value.trim(), password:$('senha').value }) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error_description || d.msg || 'E-mail ou senha não conferem.');
-    if (!d.expires_at) d.expires_at = Math.floor(Date.now()/1000) + (d.expires_in || 3600);
     saveSess(d); $('senha').value = '';
     iniciar();
   } catch(e) { $('login-erro').textContent = e.message; }
@@ -296,14 +368,14 @@ async function enviar(){
   if (blob.size < 1500) { prontoParaGravar(); $('dica').textContent = 'Não deu para ouvir. Toque e fale de novo.'; return; }
   g.ocupado = true; esperando('Entendendo…');
   try {
-    const tk = await token();
-    if (!tk) { saveSess(null); return iniciar(); }
-    const fd = new FormData();
-    fd.append('audio', blob, 'comando.' + (tipo.includes('mp4') ? 'mp4' : tipo.includes('ogg') ? 'ogg' : 'webm'));
-    fd.append('hoje', hojeLocal());
-    const r = await fetch(URL_ROTA, { method:'POST', headers:{ Authorization:'Bearer ' + tk, apikey:SB_KEY }, body:fd });
+    const { r, semLogin } = await comLogin(URL_ROTA, () => {
+      const fd = new FormData();
+      fd.append('audio', blob, 'comando.' + (tipo.includes('mp4') ? 'mp4' : tipo.includes('ogg') ? 'ogg' : 'webm'));
+      fd.append('hoje', hojeLocal());
+      return fd;
+    });
+    if (semLogin) return iniciar();
     const j = await r.json().catch(() => ({ ok:false, erro:'resposta inválida (' + r.status + ')' }));
-    if (r.status === 401) { saveSess(null); return iniciar(); }
     if (!j.ok) { prontoParaGravar(); $('dica').textContent = j.erro || 'Falhou. Toque e fale de novo.'; return; }
     mostrarRota(j);
   } catch(e) { prontoParaGravar(); $('dica').textContent = e?.message || 'Sem conexão.'; }
@@ -361,10 +433,12 @@ async function responder(app){
   try { ctx = await resumo(app); }
   catch(e) { return mostrarResposta(app, 'Não consegui consultar o ' + APPS[app].nome + ' daqui: ' + e.message, [], {}); }
   try {
-    const tk = await token();
-    const fd = new FormData();
-    fd.append('texto', _fala.slice(0, 500)); fd.append('hoje', hojeLocal()); fd.append('situacao', ctx.situacao || '');
-    const r = await fetch(APPS[app].voz, { method:'POST', headers:{ Authorization:'Bearer ' + tk, apikey:SB_KEY }, body:fd });
+    const { r, semLogin } = await comLogin(APPS[app].voz, () => {
+      const fd = new FormData();
+      fd.append('texto', _fala.slice(0, 500)); fd.append('hoje', hojeLocal()); fd.append('situacao', ctx.situacao || '');
+      return fd;
+    });
+    if (semLogin) return iniciar();
     const j = await r.json().catch(() => ({ ok:false, erro:'resposta inválida (' + r.status + ')' }));
     if (j.ok && j.acao && j.acao !== 'consulta' && j.acao !== 'nao_entendi') return abrir(app);   // era comando
     if (!j.ok) return mostrarResposta(app, j.erro || 'Não consegui responder agora.', [], {});
@@ -407,12 +481,19 @@ function ouvir(){
    os apps escondidos, para a resposta sair rápida. Se o navegador pedir
    um toque antes do microfone, o botão grande fica esperando. */
 function iniciar(){
+  // Relê o guardado: a página pode ter voltado da memória do navegador com
+  // uma sessão velha, já renovada por outra cópia do Concierge.
+  const g = lerGuardada();
+  if (g?.access_token && (!sess || g.refresh_token !== sess.refresh_token)) sess = g;
+  if (sess) agendarRenov();
   if (!sess?.access_token) { $('sair').hidden = true; $('falar-chk').hidden = true; tela('t-login'); return; }
   $('sair').hidden = false; $('falar-chk').hidden = false; pintarFala();
   prontoParaGravar();
   gravar(true);
   // Passe vencido renova antes de abrir os apps escondidos (eles não renovam).
-  token(300).then(abrirOcultos).catch(() => {});
+  // Se o Supabase recusar a renovação (saiu da conta, senha trocada), aí sim
+  // mostra o login; sem internet, segue na tela de gravar.
+  token(300).then(abrirOcultos).catch(() => { if (!sess) iniciar(); });
 }
 // Voltou para o Concierge (pelo "voltar" do Android ou trocando de app):
 // a tela fica pronta para o próximo comando, sem repetir o anterior.
