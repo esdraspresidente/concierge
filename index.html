@@ -39,7 +39,25 @@ h1{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
 .linha .btn{flex:1;padding:13px 10px;font-size:15px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;width:100%}
 .card small{color:var(--dim);display:block;margin-bottom:4px}
-#resp-txt{font-size:17px;line-height:1.5;white-space:pre-wrap}
+/* Conversa (v1.3.0): perguntas e respostas empilhadas em cima do botão,
+   que encolhe. O botão continua sendo a única forma de falar — decisão do
+   Esdras: escuta só quando ele toca, nada de microfone aberto sozinho. */
+#t-mic.conversando{justify-content:flex-end;gap:12px;min-height:0}
+#t-mic.conversando #mic{width:118px;height:118px}
+#t-mic.conversando #mic svg{width:48px;height:48px}
+#t-mic.conversando .ex{display:none}
+#t-mic.conversando #tempo{min-height:0;font-size:22px}
+#t-mic.conversando #dica{min-height:0}
+#mic.ocupado{opacity:.45}
+#conversa{display:none;width:100%;flex:1;min-height:0;overflow-y:auto;flex-direction:column;gap:10px;padding:4px 0}
+#t-mic.conversando #conversa{display:flex}
+#conv-acoes{display:none}
+#t-mic.conversando #conv-acoes{display:flex}
+.bal{max-width:88%;border-radius:16px;padding:10px 14px;font-size:15.5px;line-height:1.45;white-space:pre-wrap;word-wrap:break-word}
+.bal small{display:block;color:var(--dim);font-size:12px;margin-bottom:3px}
+.bal.eu{align-self:flex-end;background:rgba(37,211,102,.16);border:1px solid rgba(37,211,102,.35)}
+.bal.ele{align-self:flex-start;background:var(--card);border:1px solid var(--line);cursor:pointer}
+.bal.espera{color:var(--dim);font-style:italic}
 .itens{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .itens a,.itens span{font-size:13px;border:1px solid var(--line);border-radius:999px;padding:6px 11px;color:#fff;text-decoration:none}
 .itens a{background:rgba(255,255,255,.12)}
@@ -66,6 +84,11 @@ h1{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
 
 <!-- Botão grande: toca e fala; toca de novo para enviar. -->
 <section class="tela" id="t-mic">
+  <div id="conversa" aria-live="polite"></div>
+  <div class="linha" id="conv-acoes">
+    <button class="btn btn-g" id="conv-abrir" onclick="abrirApp()">Abrir app</button>
+    <button class="btn btn-g" onclick="novaConversa()">Nova conversa</button>
+  </div>
   <div id="tempo"></div>
   <button id="mic" onclick="botaoGrande()" aria-label="Gravar comando"></button>
   <div id="dica">Toque e fale</div>
@@ -90,16 +113,6 @@ h1{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
   <button class="btn btn-g" onclick="voltar()">Falar de novo</button>
 </section>
 
-<!-- Resposta de pergunta: na tela e em voz alta. -->
-<section class="tela" id="t-resp">
-  <div class="card"><small>Você perguntou</small><div id="resp-fala"></div></div>
-  <div class="card"><small id="resp-app"></small><div id="resp-txt"></div><div class="itens" id="resp-itens"></div></div>
-  <div class="linha">
-    <button class="btn btn-g" onclick="ouvir()">Ouvir</button>
-    <button class="btn btn-g" id="resp-abrir" onclick="abrirApp()">Abrir app</button>
-  </div>
-  <button class="btn btn-verde" onclick="voltar(true)">Perguntar outra coisa</button>
-</section>
 
 <script>
 /* ═══════════════════════════════════════════════════════════════════
@@ -112,11 +125,15 @@ h1{font-size:15px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
      dele, com as contas das telas; o texto e o resumo vão para a voz do
      app (tdh-voz / fullfin-voz / prev-voz), que responde. A resposta
      aparece na tela e é falada.
+   • Conversa (v1.3.0, 20/11/2026): as respostas empilham na tela e as
+     últimas trocas do mesmo app vão para a voz dele (historico). A voz
+     natural vem da concierge-fala; o botão continua sendo o único jeito de
+     falar (o Esdras preferiu tocar a microfone aberto sozinho).
    • Comando: abre o app certo com ?voz_texto=... na tela de confirmação.
      NADA é gravado aqui: a segurança dos apps é essa tela, e o Concierge
      não passa por cima dela.
    ═══════════════════════════════════════════════════════════════════ */
-const VERSAO = '1.2.1';
+const VERSAO = '1.3.0';
 const SB_URL = 'https://ggyngtqknonwnohbzkyj.supabase.co';
 const SB_KEY = 'sb_publishable_WJOo1uEpdSXTPoPDlErTJw_vPSe5x1S';
 const URL_ROTA = SB_URL + '/functions/v1/concierge-voz';
@@ -136,6 +153,12 @@ const ESPERA_ABRIR_MS = 1800;
 const MAX_SEG = 45;
 // Quanto esperar o app escondido montar o resumo. O CRM é o mais pesado.
 const ESPERA_RESUMO_MS = 30000;
+const URL_FALA = SB_URL + '/functions/v1/concierge-fala';
+// Conversa parada por mais que isso começa do zero: "e essa?" meia hora
+// depois quase nunca se refere à última resposta.
+const CONVERSA_MS = 10 * 60 * 1000;
+// As vozes dos apps aceitam até 3 trocas anteriores (cortam o resto).
+const HISTORICO_MAX = 3;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -318,14 +341,17 @@ const g = { rec:null, stream:null, partes:[], timer:null, t0:0, cancelado:false,
 
 function prontoParaGravar(){
   tela('t-mic');
-  const b = $('mic'); b.innerHTML = ICONE_MIC; b.classList.remove('gravando'); b.setAttribute('aria-label', 'Gravar comando');
-  $('tempo').textContent = ''; $('dica').textContent = 'Toque e fale'; $('cancelar').hidden = true;
+  const b = $('mic'); b.innerHTML = ICONE_MIC; b.classList.remove('gravando', 'ocupado'); b.setAttribute('aria-label', 'Gravar comando');
+  $('tempo').textContent = ''; $('cancelar').hidden = true;
+  $('dica').textContent = conversaAtiva() ? 'Toque para continuar a conversa' : 'Toque e fale';
+  desenharConversa();
 }
+// Tocar enquanto a resposta está sendo falada corta a voz e já grava.
 function botaoGrande(){ if (g.rec && g.rec.state === 'recording') parar(false); else gravar(); }
 
 async function gravar(automatico){
   if (g.ocupado) return;
-  try { speechSynthesis.cancel(); } catch(e){}
+  pararFala();
   if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') { $('dica').textContent = 'Este aparelho não permite gravar áudio aqui.'; return; }
   try { g.stream = await navigator.mediaDevices.getUserMedia({ audio:true }); }
   catch(e) {
@@ -360,7 +386,17 @@ function cancelar(){ parar(true); }
 // Desliga o microfone de verdade (senão o ícone de gravação fica aceso).
 function soltarMic(){ try { g.stream?.getTracks().forEach(t => t.stop()); } catch(e){} g.stream = null; }
 
-function esperando(txt, sub){ $('espera-txt').textContent = txt; $('espera-sub').textContent = sub || ''; tela('t-espera'); }
+// Com conversa aberta, espera na própria conversa (não some o que já foi
+// dito); sem conversa, a tela de espera de sempre.
+function esperando(txt, sub, pergunta){
+  if (conversaAtiva() || pergunta) {
+    tela('t-mic'); desenharConversa(pergunta);
+    $('mic').classList.add('ocupado'); $('mic').classList.remove('gravando'); $('mic').innerHTML = ICONE_MIC;
+    $('tempo').textContent = ''; $('cancelar').hidden = true; $('dica').textContent = txt;
+    return;
+  }
+  $('espera-txt').textContent = txt; $('espera-sub').textContent = sub || ''; tela('t-espera');
+}
 
 async function enviar(){
   const tipo = g.rec?.mimeType || 'audio/webm';
@@ -377,7 +413,7 @@ async function enviar(){
     if (semLogin) return iniciar();
     const j = await r.json().catch(() => ({ ok:false, erro:'resposta inválida (' + r.status + ')' }));
     if (!j.ok) { prontoParaGravar(); $('dica').textContent = j.erro || 'Falhou. Toque e fale de novo.'; return; }
-    mostrarRota(j);
+    await mostrarRota(j);
   } catch(e) { prontoParaGravar(); $('dica').textContent = e?.message || 'Sem conexão.'; }
   finally { g.ocupado = false; }
 }
@@ -394,6 +430,10 @@ function mostrarRota(j){
   _tipo = j.tipo === 'pergunta' ? 'pergunta' : 'comando';
   clearTimeout(_timerAbrir);
   if (APPS[j.app] && _tipo === 'pergunta') return responder(j.app);
+  // Continuação ("e a Juliana?", "e semana que vem?") sem nome de app: vai
+  // para o app da conversa. SÓ pergunta — comando em dúvida continua com a
+  // escolha manual, porque gasto de obra no Fullfin conta duas vezes.
+  if (_tipo === 'pergunta' && j.app === 'duvida' && conversaAtiva() && APPS[conv.app]) return responder(conv.app);
   tela('t-rota');
   $('rota-fala').textContent = '“' + _fala + '”';
   $('rota-motivo').textContent = j.motivo || '';
@@ -417,7 +457,7 @@ function abrir(app){
   // O app de destino tira o ?voz_texto da barra assim que lê.
   location.href = APPS[app].url + '?voz_texto=' + encodeURIComponent(_fala);
 }
-function voltar(gravarJa){ clearTimeout(_timerAbrir); try { speechSynthesis.cancel(); } catch(e){} prontoParaGravar(); if (gravarJa) gravar(); }
+function voltar(gravarJa){ clearTimeout(_timerAbrir); pararFala(); prontoParaGravar(); if (gravarJa) gravar(); }
 
 /* ── Resposta ────────────────────────────────────────────────────────
    Pega o resumo do app escondido e manda pergunta + resumo para a voz do
@@ -425,52 +465,125 @@ function voltar(gravarJa){ clearTimeout(_timerAbrir); try { speechSynthesis.canc
    Se a voz entender que era comando, abre o app na confirmação (caminho
    de sempre). Se o app escondido falhar (login vencido, sem acesso),
    avisa e oferece abrir o app. */
-let _resp = '';
-async function responder(app){
-  _app = app;
-  esperando('Consultando ' + APPS[app].nome + '…', '“' + _fala + '”');
-  let ctx;
-  try { ctx = await resumo(app); }
-  catch(e) { return mostrarResposta(app, 'Não consegui consultar o ' + APPS[app].nome + ' daqui: ' + e.message, [], {}); }
-  try {
-    const { r, semLogin } = await comLogin(APPS[app].voz, () => {
-      const fd = new FormData();
-      fd.append('texto', _fala.slice(0, 500)); fd.append('hoje', hojeLocal()); fd.append('situacao', ctx.situacao || '');
-      return fd;
-    });
-    if (semLogin) return iniciar();
-    const j = await r.json().catch(() => ({ ok:false, erro:'resposta inválida (' + r.status + ')' }));
-    if (j.ok && j.acao && j.acao !== 'consulta' && j.acao !== 'nao_entendi') return abrir(app);   // era comando
-    if (!j.ok) return mostrarResposta(app, j.erro || 'Não consegui responder agora.', [], {});
-    mostrarResposta(app, j.resposta || 'Sem resposta.', j.itens || [], ctx.mapa || {});
-  } catch(e) { mostrarResposta(app, e?.message || 'Sem conexão.', [], {}); }
+// Conversa só em memória: some ao fechar o Concierge. Tem nome e valor
+// de cliente; não vai para localStorage.
+let conv = { app:'', trocas:[], t:0 };   // trocas: { app, p, r, fala, itens:[{rotulo,href}], erro }
+function conversaAtiva(){
+  if (conv.trocas.length && Date.now() - conv.t > CONVERSA_MS) conv = { app:'', trocas:[], t:0 };
+  return conv.trocas.length > 0;
 }
-function mostrarResposta(app, texto, itens, mapa){
-  _resp = texto;
-  $('resp-fala').textContent = '“' + _fala + '”';
-  $('resp-app').textContent = APPS[app].nome;
-  $('resp-txt').textContent = texto;
-  $('resp-abrir').textContent = 'Abrir ' + APPS[app].nome;
+function novaConversa(){ pararFala(); conv = { app:'', trocas:[], t:0 }; prontoParaGravar(); }
+// Histórico para a voz do app: só as últimas trocas seguidas do MESMO app
+// (trocar de app recomeça a memória — o Fullfin não sabe do que se falava
+// no TDH) e sem as trocas que deram erro.
+function historicoDe(app){
+  const h = [];
+  for (let i = conv.trocas.length - 1; i >= 0 && h.length < HISTORICO_MAX; i--) {
+    const t = conv.trocas[i];
+    if (t.app !== app) break;
+    if (!t.erro) h.unshift({ p:t.p, r:t.r });
+  }
+  return h;
+}
+function desenharConversa(pendente){
+  const ativa = conversaAtiva() || !!pendente;
+  $('t-mic').classList.toggle('conversando', ativa);
+  if (!ativa) { $('conversa').innerHTML = ''; return; }
+  let html = conv.trocas.map((t, i) =>
+    `<div class="bal eu">${esc(t.p)}</div>` +
+    `<div class="bal ele" onclick="ouvirTroca(${i})"><small>${esc(APPS[t.app]?.nome || '')}${t.erro ? '' : ' · toque para ouvir'}</small>${esc(t.r)}` +
+    (t.itens.length ? '<div class="itens">' + t.itens.map(x => x.href ? `<a href="${esc(x.href)}" onclick="event.stopPropagation()">${esc(x.rotulo)} ›</a>` : `<span>${esc(x.rotulo)}</span>`).join('') + '</div>' : '') +
+    `</div>`).join('');
+  if (pendente) html += `<div class="bal eu">${esc(pendente)}</div><div class="bal ele espera">…</div>`;
+  $('conversa').innerHTML = html;
+  const ult = conv.trocas[conv.trocas.length - 1];
+  if (ult && APPS[ult.app]) { $('conv-abrir').textContent = 'Abrir ' + APPS[ult.app].nome; _app = ult.app; }
+  $('conversa').scrollTop = $('conversa').scrollHeight;
+}
+
+/* ── Resposta ────────────────────────────────────────────────────────
+   Pega o resumo do app escondido e manda pergunta + resumo + as últimas
+   trocas daquele app para a voz do app, como o assistente de lá faz. A voz
+   responde SÓ com o resumo. Se a voz entender que era comando, abre o app
+   na confirmação (caminho de sempre). Se o app escondido falhar (login
+   vencido, sem acesso), avisa na conversa e oferece abrir o app. */
+async function responder(app){
+  _app = app; g.ocupado = true;
+  const pergunta = _fala;
+  esperando('Consultando ' + APPS[app].nome + '…', '“' + pergunta + '”', pergunta);
+  try {
+    let ctx;
+    try { ctx = await resumo(app); }
+    catch(e) { return mostrarResposta(app, pergunta, 'Não consegui consultar o ' + APPS[app].nome + ' daqui: ' + e.message, '', [], {}, true); }
+    try {
+      const historico = historicoDe(app);
+      const { r, semLogin } = await comLogin(APPS[app].voz, () => {
+        const fd = new FormData();
+        fd.append('texto', pergunta.slice(0, 500)); fd.append('hoje', hojeLocal()); fd.append('situacao', ctx.situacao || '');
+        if (historico.length) fd.append('historico', JSON.stringify(historico));
+        return fd;
+      });
+      if (semLogin) return iniciar();
+      const j = await r.json().catch(() => ({ ok:false, erro:'resposta inválida (' + r.status + ')' }));
+      if (j.ok && j.acao && j.acao !== 'consulta' && j.acao !== 'nao_entendi') return abrir(app);   // era comando
+      if (!j.ok) return mostrarResposta(app, pergunta, j.erro || 'Não consegui responder agora.', '', [], {}, true);
+      mostrarResposta(app, pergunta, j.resposta || 'Sem resposta.', j.fala || '', j.itens || [], ctx.mapa || {}, !j.resposta);
+    } catch(e) { mostrarResposta(app, pergunta, e?.message || 'Sem conexão.', '', [], {}, true); }
+  } finally { g.ocupado = false; }
+}
+function mostrarResposta(app, pergunta, texto, fala, itens, mapa, erro){
   // Itens citados: no TDH cada um tem endereço no app (#/cliente/...);
   // nos outros, só o nome.
-  $('resp-itens').innerHTML = itens.filter(c => mapa[c]).slice(0, 8).map(c => {
-    const m = mapa[c];
-    return m.rota ? `<a href="${esc(APPS[app].url + m.rota)}">${esc(m.rotulo || c)} ›</a>` : `<span>${esc(m.rotulo || c)}</span>`;
-  }).join('');
-  tela('t-resp');
-  if (falarLigado()) ouvir();
+  const its = itens.filter(c => mapa[c]).slice(0, 8).map(c => ({ rotulo:mapa[c].rotulo || c, href:mapa[c].rota ? APPS[app].url + mapa[c].rota : '' }));
+  conversaAtiva();   // descarta conversa vencida antes de somar
+  conv.trocas.push({ app, p:pergunta, r:texto, fala:fala || texto, itens:its, erro:!!erro });
+  if (conv.trocas.length > 20) conv.trocas.shift();   // tela não cresce sem fim
+  conv.app = app; conv.t = Date.now();
+  g.ocupado = false;
+  prontoParaGravar();
+  falar(fala || texto);
 }
 function abrirApp(){ if (APPS[_app]) location.href = APPS[_app].url; }
+function ouvirTroca(i){ const t = conv.trocas[i]; if (t && !(g.rec && g.rec.state === 'recording')) falar(t.fala || t.r, true); }
 
 /* ── Voz da resposta ─────────────────────────────────────────────────
-   Liga/desliga no canto (fica lembrado neste aparelho). */
+   Liga/desliga no canto (fica lembrado neste aparelho).
+   v1.3.0: voz natural pela concierge-fala (TTS da OpenAI, mesma conta da
+   transcrição). Se ela falhar ou demorar, cai na voz do aparelho — a
+   resposta nunca fica sem ser dita por causa da voz. A voz diz a "fala"
+   (1–2 frases); a tela mostra a resposta completa. */
+let _audio = null, _falaSeq = 0;
 function falarLigado(){ try { return localStorage.getItem('concierge_falar') !== '0'; } catch(e) { return true; } }
 function pintarFala(){ $('falar-chk').textContent = falarLigado() ? '🔊 Voz ligada' : '🔇 Voz desligada'; }
-function alternarFala(){ try { localStorage.setItem('concierge_falar', falarLigado() ? '0' : '1'); } catch(e){} pintarFala(); if (!falarLigado()) try { speechSynthesis.cancel(); } catch(e){} }
-function ouvir(){
+function alternarFala(){ try { localStorage.setItem('concierge_falar', falarLigado() ? '0' : '1'); } catch(e){} pintarFala(); if (!falarLigado()) pararFala(); }
+// Para o que estiver falando E invalida o áudio que ainda está chegando
+// (senão ele começaria a tocar no meio da próxima gravação).
+function pararFala(){
+  _falaSeq++;
+  try { if (_audio) { _audio.pause(); URL.revokeObjectURL(_audio.src); } } catch(e){}
+  _audio = null;
+  try { speechSynthesis.cancel(); } catch(e){}
+}
+async function falar(texto, forcar){
+  if (!texto || (!forcar && !falarLigado())) return;
+  pararFala();
+  const seq = _falaSeq;
+  const valendo = () => seq === _falaSeq && !(g.rec && g.rec.state === 'recording');
+  try {
+    const { r, semLogin } = await comLogin(URL_FALA, () => { const fd = new FormData(); fd.append('texto', texto); return fd; });
+    if (semLogin || !r.ok || !(r.headers.get('Content-Type') || '').includes('audio')) throw new Error('sem voz');
+    const blob = await r.blob();
+    if (!valendo()) return;
+    _audio = new Audio(URL.createObjectURL(blob));
+    await _audio.play();
+  } catch(e) {
+    if (valendo()) falarAparelho(texto);
+  }
+}
+function falarAparelho(texto){
   try {
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(_resp); u.lang = 'pt-BR';
+    const u = new SpeechSynthesisUtterance(texto); u.lang = 'pt-BR';
     const v = speechSynthesis.getVoices().find(x => /pt[-_]BR/i.test(x.lang)); if (v) u.voice = v;
     speechSynthesis.speak(u);
   } catch(e){}
